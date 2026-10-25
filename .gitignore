@@ -7,3 +7,6 @@
 build*/
 .vs/
 __pycache__/
+dist/
+wheelhouse/
+*.whl

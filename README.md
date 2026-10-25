@@ -51,10 +51,16 @@ Parameters and defaults are those of the original, see [docs/SPEC.md §2.2](docs
 
 ## Building
 
-Windows, Visual Studio 2022+: `build.bat` → `build\AutoAdjust.dll`.
+- Meson: `meson setup build && ninja -C build`; on Windows with MSVC
+  `meson setup build --vsenv -Db_vscrt=mt`. The result is `AutoAdjust.dll` / `libAutoAdjust.so` /
+  `libAutoAdjust.dylib`, loadable by both AviSynth+ and VapourSynth.
+- Wheel for VapourSynth: `pip install .` (installs into `site-packages/vapoursynth/plugins`).
+- Windows without Meson: `build.bat` (Visual Studio 2022+) -> `build\AutoAdjust.dll`.
+- CI (`.github/workflows/build.yml`) builds and tests Windows x64, Linux x86_64 and macOS arm64, and
+  attaches wheels plus zipped plugin binaries to releases for `v*` tags.
 
-Floating point must stay strict (`/fp:precise`, no FMA contraction; `-ffp-contract=off` with GCC/Clang),
-otherwise the output is no longer bit-exact with the reference.
+Floating point must stay strict (`/fp:precise`; `-ffp-contract=off` with GCC/Clang, set by
+`meson.build`), otherwise the output is no longer bit-exact with the reference.
 
 ## License
 

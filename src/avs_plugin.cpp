@@ -159,10 +159,16 @@ AVSValue __cdecl Create(AVSValue args, void*, IScriptEnvironment* env) {
 
 }  // namespace
 
+#ifdef _WIN32
+#define AUTOADJUST_AVS_EXPORT extern "C" __declspec(dllexport)
+#else
+#define AUTOADJUST_AVS_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
+
 const AVS_Linkage* AVS_linkage = nullptr;
 
-extern "C" __declspec(dllexport) const char* __stdcall AvisynthPluginInit3(IScriptEnvironment* env,
-                                                                         const AVS_Linkage* const vectors) {
+AUTOADJUST_AVS_EXPORT const char* __stdcall AvisynthPluginInit3(IScriptEnvironment* env,
+                                                                const AVS_Linkage* const vectors) {
   AVS_linkage = vectors;
   env->AddFunction("AutoAdjust",
                    "c[external_clip]c[auto_gain]b[dark_limit]f[bright_limit]f[gamma_limit]f[dark_exclude]f"
