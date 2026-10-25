@@ -52,3 +52,7 @@ Windows, Visual Studio 2022+: `build.bat` → `build\AutoAdjust.dll`.
 
 Floating point must stay strict (`/fp:precise`, no FMA contraction; `-ffp-contract=off` with GCC/Clang),
 otherwise the output is no longer bit-exact with the reference.
+
+## License
+
+GPL-2.0-or-later, see [LICENSE](LICENSE). The vendored SDK headers in `include/` keep their own licences.

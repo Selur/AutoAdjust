@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // AutoAdjust core: statistics, temporal combination and pixel transform, independent of the host API.
 #pragma once
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // VapourSynth (API 4) interface of AutoAdjust: native 8-16 bit integer YUV and Gray clips.
 #include <memory>
 #include <string>

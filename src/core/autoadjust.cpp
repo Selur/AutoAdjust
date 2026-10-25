@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // AutoAdjust core implementation, following docs/SPEC.md (C reference path, single precision).
 #include "autoadjust.hpp"
 

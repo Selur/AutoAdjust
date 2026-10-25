@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Thread-safe least-recently-used cache of per-frame statistics.
 #pragma once
 

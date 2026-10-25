@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // AviSynth+ interface of AutoAdjust (same function name and arguments as the original 2.60 plugin).
 #include <memory>
 #include <string>
