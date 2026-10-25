@@ -1,0 +1,5 @@
+#pragma once
+
+#define AUTOADJUST_VERSION_MAJOR 0
+#define AUTOADJUST_VERSION_MINOR 1
+#define AUTOADJUST_VERSION "0.1.0"
