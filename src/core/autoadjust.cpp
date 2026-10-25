@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "bluenoise64.h"
+#include "kernels.hpp"
 
 namespace autoadjust {
 
@@ -31,8 +32,6 @@ void readRow(const ConstPlane& p, int y, uint16_t* out) {
       break;
   }
 }
-
-ConstPlane asConst(const Plane& p) { return {p.data, p.stride, p.width, p.height, p.kind}; }
 
 std::vector<float> histogram(const ConstPlane& p, int bins) {
   std::vector<uint32_t> count(bins, 0);
@@ -344,8 +343,9 @@ bool parseChangeStatus(const std::string& text, int frame_count, std::vector<Cha
 }
 
 Engine::Engine(const Params& p, const Format& fmt, int luma_width, int luma_height, int frame_count,
-               std::vector<ChangeRange> overrides)
-    : p_(p), fmt_(fmt), frame_count_(frame_count), overrides_(std::move(overrides)) {
+               std::vector<ChangeRange> overrides, int asm_opt)
+    : p_(p), fmt_(fmt), frame_count_(frame_count), overrides_(std::move(overrides)), k_(&kernelsFor(asm_opt)) {
+  std::fill(std::begin(rounding_), std::end(rounding_), 0.5f);
   const int b = fmt_.bits;
   maxv_ = (1 << b) - 1;
   bins_ = 1 << b;
@@ -503,60 +503,78 @@ void Engine::apply(const Correction& c, Plane* planes, int plane_count) const {
   }
 }
 
-void Engine::processLuma(const Correction& c, Plane& pl) const {
-  const int w = pl.width, h = pl.height;
-  std::vector<float> d(static_cast<size_t>(w) * h);
-  std::vector<uint16_t> row(w);
-  const ConstPlane src = asConst(pl);
+// The delta depends only on the sample value, so it is computed once per possible value (SPEC §8).
+std::vector<float> Engine::lumaTable(const Correction& c, int size) const {
+  std::vector<float> lut(size);
   const float avg = c.avg, cmin = c.cmin, cmax = c.cmax, low = c.low, high = c.high, gamma = c.gamma;
-  for (int y = 0; y < h; y++) {
-    readRow(src, y, row.data());
-    float* out = d.data() + static_cast<size_t>(y) * w;
-    for (int x = 0; x < w; x++) {
-      const float v = static_cast<float>(row[x]);
-      float r;
-      if (p_.gain_mode == 0) {
-        float up, dn;
-        if (cmax == high || cmax <= avg || high <= avg) up = v;
-        else up = ((v - avg) * (high - avg)) / (cmax - avg) + avg;
-        if (cmin == low || avg <= cmin || avg <= low) dn = v;
-        else dn = ((v - cmin) * (avg - low)) / (avg - cmin) + low;
-        r = v < avg ? dn : (v > avg ? up : v);
-        if (low != high && gamma != 1.0f && low <= r && r <= high)
-          r = powF((r - low) / (high - low), gamma) * (high - low) + low;
+  for (int i = 0; i < size; i++) {
+    const float v = static_cast<float>(i);
+    float r;
+    if (p_.gain_mode == 0) {
+      float up, dn;
+      if (cmax == high || cmax <= avg || high <= avg) up = v;
+      else up = ((v - avg) * (high - avg)) / (cmax - avg) + avg;
+      if (cmin == low || avg <= cmin || avg <= low) dn = v;
+      else dn = ((v - cmin) * (avg - low)) / (avg - cmin) + low;
+      r = v < avg ? dn : (v > avg ? up : v);
+      if (low != high && gamma != 1.0f && low <= r && r <= high)
+        r = powF((r - low) / (high - low), gamma) * (high - low) + low;
+    } else {
+      if (cmin == cmax || low == high) {
+        r = v;
       } else {
-        if (cmin == cmax || low == high) {
-          r = v;
-        } else {
-          float t = (v - cmin) / (cmax - cmin);
-          if (0 <= t && t <= 1) t = powF(t, gamma);
-          r = t * (high - low) + low;
-        }
+        float t = (v - cmin) / (cmax - cmin);
+        if (0 <= t && t <= 1) t = powF(t, gamma);
+        r = t * (high - low) + low;
       }
-      out[x] = r - v;
+    }
+    lut[i] = r - v;
+  }
+  return lut;
+}
+
+std::vector<float> Engine::chromaTable(const Correction& c, float bal, int size) const {
+  std::vector<float> lut(size);
+  const float half = half_, g1 = c.cgain - 1;
+  for (int i = 0; i < size; i++) {
+    const float v = static_cast<float>(i);
+    const float xv = v - half;
+    const float r = ((xv * (((1 - std::fabs(xv / half)) * g1) + 1)) + bal) + half;
+    lut[i] = r - v;
+  }
+  return lut;
+}
+
+void Engine::deltaFromTable(const std::vector<float>& lut, const Plane& pl, std::vector<float>& d) const {
+  const int w = pl.width, h = pl.height;
+  d.resize(static_cast<size_t>(w) * h);
+  const float* table = lut.data();
+  for (int y = 0; y < h; y++) {
+    const uint8_t* row = pl.data + pl.stride * y;
+    float* out = d.data() + static_cast<size_t>(y) * w;
+    if (pl.kind == SampleKind::U8) {
+      for (int x = 0; x < w; x++) out[x] = table[row[x]];
+    } else {
+      const uint16_t* r16 = reinterpret_cast<const uint16_t*>(row);
+      for (int x = 0; x < w; x++) out[x] = table[r16[x]];
     }
   }
-  if (p_.use_interp) smooth(d, w, h, radius_, radius_);
+}
+
+// The table covers every value the sample type can hold, so out-of-range samples are handled like in the formula.
+static int tableSize(const Plane& pl) { return pl.kind == SampleKind::U8 ? 256 : 65536; }
+
+void Engine::processLuma(const Correction& c, Plane& pl) const {
+  std::vector<float> d;
+  deltaFromTable(lumaTable(c, tableSize(pl)), pl, d);
+  if (p_.use_interp) smooth(d, pl.width, pl.height, radius_, radius_);
   store(d, pl);
 }
 
 void Engine::processChroma(const Correction& c, Plane& pl, float bal) const {
-  const int w = pl.width, h = pl.height;
-  std::vector<float> d(static_cast<size_t>(w) * h);
-  std::vector<uint16_t> row(w);
-  const ConstPlane src = asConst(pl);
-  const float half = half_, g1 = c.cgain - 1;
-  for (int y = 0; y < h; y++) {
-    readRow(src, y, row.data());
-    float* out = d.data() + static_cast<size_t>(y) * w;
-    for (int x = 0; x < w; x++) {
-      const float v = static_cast<float>(row[x]);
-      const float xv = v - half;
-      const float r = ((xv * (((1 - std::fabs(xv / half)) * g1) + 1)) + bal) + half;
-      out[x] = r - v;
-    }
-  }
-  if (p_.use_interp) smooth(d, w, h, radius_ >> fmt_.ssw, radius_ >> fmt_.ssh);
+  std::vector<float> d;
+  deltaFromTable(chromaTable(c, bal, tableSize(pl)), pl, d);
+  if (p_.use_interp) smooth(d, pl.width, pl.height, radius_ >> fmt_.ssw, radius_ >> fmt_.ssh);
   store(d, pl);
 }
 
@@ -568,68 +586,57 @@ void Engine::smooth(std::vector<float>& d, int w, int h, int rx, int ry) const {
   // Vertical pass d -> t: per output row the tap rows are the same for every column.
   {
     const float inv = 1.0f / (static_cast<float>(2 * ry) / static_cast<float>(step) + 1.0f);
-    std::vector<float> even(w), odd(w);
-    std::vector<int> taps;
+    std::vector<const float*> taps;
     for (int p = 0; p < h; p++) {
       int start, end;
       tapRange(p, h, ry, start, end);
       taps.clear();
-      for (int q = start; q <= end; q += step) taps.push_back(q);
+      for (int q = start; q <= end; q += step) taps.push_back(d.data() + static_cast<size_t>(q) * w);
       const int n = static_cast<int>(taps.size());
       const bool interior = p >= ry && p < h - ry;
-      const float* center = d.data() + static_cast<size_t>(p) * w;
-      std::fill(even.begin(), even.end(), 0.0f);
-      std::fill(odd.begin(), odd.end(), 0.0f);
-      for (int j = 0; j + 1 < n; j += 2) {
-        const float* a = d.data() + static_cast<size_t>(taps[j]) * w;
-        const float* b = d.data() + static_cast<size_t>(taps[j + 1]) * w;
-        for (int x = 0; x < w; x++) {
-          const float lo = center[x] - thr, hi = center[x] + thr;
-          even[x] += std::min(std::max(a[x], lo), hi);
-          odd[x] += std::min(std::max(b[x], lo), hi);
-        }
-      }
-      float* out = t.data() + static_cast<size_t>(p) * w;
-      const float* last = (n & 1) ? d.data() + static_cast<size_t>(taps[n - 1]) * w : nullptr;
-      const float count = static_cast<float>(n);
-      for (int x = 0; x < w; x++) {
-        float sum = even[x] + odd[x];
-        if (last) sum += std::min(std::max(last[x], center[x] - thr), center[x] + thr);
-        out[x] = interior ? sum * inv : sum / count;
-      }
+      k_->vpass(taps.data(), n, d.data() + static_cast<size_t>(p) * w, t.data() + static_cast<size_t>(p) * w, w, thr,
+                interior ? inv : static_cast<float>(n), !interior);
     }
   }
 
-  // Horizontal pass t -> d.
+  // Horizontal pass t -> d: the borders here, the interior in the kernel.
   {
     const float inv = 1.0f / (static_cast<float>(2 * rx) / static_cast<float>(step) + 1.0f);
+    const int interior_taps = (2 * rx) / step + 1;
+    const int p0 = rx, p1 = w - rx;
     std::vector<float> tap(2 * 32 + 1);
+    auto border = [&](const float* src, float* out, int p) {
+      int start, end;
+      tapRange(p, w, rx, start, end);
+      const float lo = src[p] - thr, hi = src[p] + thr;
+      int n = 0;
+      for (int q = start; q <= end; q += step) tap[n++] = std::min(std::max(src[q], lo), hi);
+      float sum;
+      if (n >= 8) {
+        const int n8 = n & ~7;
+        float a[4] = {0, 0, 0, 0}, b[4] = {0, 0, 0, 0};
+        for (int j = 0; j < n8; j += 8) {
+          for (int l = 0; l < 4; l++) a[l] += tap[j + l];
+          for (int l = 0; l < 4; l++) b[l] += tap[j + 4 + l];
+        }
+        const float s0 = a[0] + b[0], s1 = a[1] + b[1], s2 = a[2] + b[2], s3 = a[3] + b[3];
+        sum = (s0 + s2) + (s1 + s3);
+        for (int j = n8; j < n; j++) sum += tap[j];
+      } else {
+        sum = 0;
+        for (int j = 0; j < n; j++) sum += tap[j];
+      }
+      out[p] = sum / static_cast<float>(n);
+    };
     for (int y = 0; y < h; y++) {
       const float* src = t.data() + static_cast<size_t>(y) * w;
       float* out = d.data() + static_cast<size_t>(y) * w;
-      for (int p = 0; p < w; p++) {
-        int start, end;
-        tapRange(p, w, rx, start, end);
-        const float lo = src[p] - thr, hi = src[p] + thr;
-        int n = 0;
-        for (int q = start; q <= end; q += step) tap[n++] = std::min(std::max(src[q], lo), hi);
-        float sum;
-        if (n >= 8) {
-          const int n8 = n & ~7;
-          float a[4] = {0, 0, 0, 0}, b[4] = {0, 0, 0, 0};
-          for (int j = 0; j < n8; j += 8) {
-            for (int l = 0; l < 4; l++) a[l] += tap[j + l];
-            for (int l = 0; l < 4; l++) b[l] += tap[j + 4 + l];
-          }
-          const float s0 = a[0] + b[0], s1 = a[1] + b[1], s2 = a[2] + b[2], s3 = a[3] + b[3];
-          sum = (s0 + s2) + (s1 + s3);
-          for (int j = n8; j < n; j++) sum += tap[j];
-        } else {
-          sum = 0;
-          for (int j = 0; j < n; j++) sum += tap[j];
-        }
-        const bool interior = p >= rx && p < w - rx;
-        out[p] = interior ? sum * inv : sum / static_cast<float>(n);
+      if (p0 < p1) {
+        for (int p = 0; p < p0; p++) border(src, out, p);
+        k_->hpass(src, out, p0, p1, rx, step, interior_taps, thr, inv);
+        for (int p = p1; p < w; p++) border(src, out, p);
+      } else {
+        for (int p = 0; p < w; p++) border(src, out, p);
       }
     }
   }
@@ -638,25 +645,15 @@ void Engine::smooth(std::vector<float>& d, int w, int h, int rx, int ry) const {
 void Engine::store(const std::vector<float>& d, Plane& pl) const {
   const int w = pl.width, h = pl.height;
   const float maxv = static_cast<float>(maxv_);
-  std::vector<uint16_t> row(w);
-  const ConstPlane src = asConst(pl);
   for (int y = 0; y < h; y++) {
-    readRow(src, y, row.data());
     const float* dr = d.data() + static_cast<size_t>(y) * w;
-    const float* m = dither_[y & 63];
-    uint8_t* dst = pl.data + pl.stride * y;
-    for (int x = 0; x < w; x++) {
-      float f = (dr[x] + static_cast<float>(row[x])) + (p_.use_dither ? m[x & 63] : 0.5f);
-      f = f >= 0 ? std::min(f, maxv) : 0.0f;
-      const int o = static_cast<int>(f);
-      switch (pl.kind) {
-        case SampleKind::U8:
-          dst[x] = static_cast<uint8_t>(o);
-          break;
-        case SampleKind::U16:
-          reinterpret_cast<uint16_t*>(dst)[x] = static_cast<uint16_t>(o);
-          break;
-      }
+    const float* add = p_.use_dither ? dither_[y & 63] : rounding_;
+    uint8_t* row = pl.data + pl.stride * y;
+    if (pl.kind == SampleKind::U8) {
+      k_->store8(dr, row, row, w, add);
+    } else {
+      uint16_t* r16 = reinterpret_cast<uint16_t*>(row);
+      k_->store16(dr, r16, r16, w, add, maxv);
     }
   }
 }

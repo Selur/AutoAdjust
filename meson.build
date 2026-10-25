@@ -4,11 +4,13 @@ project('AutoAdjust', 'cpp',
   version : '0.1.0'
 )
 
-sources = [
-  'src/core/autoadjust.cpp',
-  'src/avs_plugin.cpp',
-  'src/vs_plugin.cpp',
+kernel_sources = [
+  'src/core/kernels_c.cpp',
+  'src/core/kernels_sse2.cpp',
+  'src/core/kernels_neon.cpp',
+  'src/core/kernels_dispatch.cpp',
 ]
+sources = ['src/core/autoadjust.cpp', 'src/avs_plugin.cpp', 'src/vs_plugin.cpp'] + kernel_sources
 
 # Vendored AviSynth+ and VapourSynth (API 4) headers.
 incs = include_directories('include/avisynth', 'include/vapoursynth', 'src')
@@ -23,6 +25,19 @@ else
   if host_machine.cpu_family() in ['x86', 'x86_64']
     add_project_arguments('-mfpmath=sse', '-msse2', language : 'cpp')
   endif
+endif
+
+# The AVX2 kernels get AVX2 (but no FMA) only for their own file; asm_opt selects them at runtime.
+# On other CPUs the file is empty, kernels_neon.cpp holds the arm64 kernels (NEON is part of arm64).
+kernel_libs = []
+if host_machine.cpu_family() in ['x86', 'x86_64']
+  kernel_libs += static_library('kernels_avx2', 'src/core/kernels_avx2.cpp',
+    cpp_args : msvc ? ['/arch:AVX2'] : ['-mavx2'],
+    pic : true
+  )
+else
+  kernel_sources += 'src/core/kernels_avx2.cpp'
+  sources += 'src/core/kernels_avx2.cpp'
 endif
 
 # VapourSynth only autoloads *.dylib on macOS, while Meson defaults to *.so for modules.
@@ -41,8 +56,17 @@ endif
 
 shared_module('AutoAdjust', sources,
   include_directories : incs,
+  link_with : kernel_libs,
   install : true,
   install_dir : install_dir,
   gnu_symbol_visibility : 'hidden',
   kwargs : module_kwargs
 )
+
+# Every kernel set against the C kernels on random data: meson test -C build
+kernel_test = executable('kernel_test', ['test/kernel_test.cpp'] + kernel_sources,
+  include_directories : incs,
+  link_with : kernel_libs,
+  build_by_default : false
+)
+test('kernels', kernel_test)

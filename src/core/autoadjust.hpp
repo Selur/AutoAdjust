@@ -10,6 +10,8 @@
 
 namespace autoadjust {
 
+struct Kernels;
+
 struct Params {
   bool auto_gain = false;
   float dark_limit = 1.5f;
@@ -85,7 +87,7 @@ struct Correction {
 class Engine {
  public:
   Engine(const Params& p, const Format& fmt, int luma_width, int luma_height, int frame_count,
-         std::vector<ChangeRange> overrides);
+         std::vector<ChangeRange> overrides, int asm_opt = 0);
 
   const Params& params() const { return p_; }
   const Format& format() const { return fmt_; }
@@ -105,6 +107,9 @@ class Engine {
   void apply(const Correction& c, Plane* planes, int plane_count) const;
 
  private:
+  std::vector<float> lumaTable(const Correction& c, int size) const;
+  std::vector<float> chromaTable(const Correction& c, float bal, int size) const;
+  void deltaFromTable(const std::vector<float>& lut, const Plane& pl, std::vector<float>& d) const;
   void processLuma(const Correction& c, Plane& pl) const;
   void processChroma(const Correction& c, Plane& pl, float bal) const;
   void smooth(std::vector<float>& d, int w, int h, int rx, int ry) const;
@@ -118,6 +123,8 @@ class Engine {
   float half_, tv_lo_, tv_hi_, thr_;
   int radius_;  // luma smoothing radius
   float dither_[64][64];
+  float rounding_[64];
+  const Kernels* k_;
 };
 
 }  // namespace autoadjust

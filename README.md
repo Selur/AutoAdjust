@@ -32,7 +32,7 @@ core.autoadjust.AutoAdjust(clip clip[, clip external_clip, int auto_gain, float 
     float bright_limit, float gamma_limit, float dark_exclude, float bright_exclude, int gain_mode,
     int chroma_process, float avg_safety, int input_tv, int output_tv, int auto_balance,
     float chroma_limit, float balance_str, int scd_threshold, int temporal_radius,
-    data change_status, int use_interp, int use_dither, int high_quality, int debug_view])
+    data change_status, int use_interp, int use_dither, int high_quality, int asm_opt, int debug_view])
 ```
 
 Examples:
@@ -151,11 +151,25 @@ one; slower, slightly smoother. Only with `use_interp`.
 when the corrected values are rounded back to integers; keeps stretched gradients free of banding.
 false = plain rounding. The pattern is fixed, so the output is reproducible.
 
-#### Compatibility
+#### Performance
 
-**threads_count** (int, 0 … 16, default 0), **asm_opt** (int, 0 … 3, default 0) — AviSynth+ only,
-accepted for scripts written for the original and ignored: the host does the threading, and there
-is one code path (the exact one of the original's C path).
+**asm_opt** (int, 0 … 3, default 0) — instruction set of the pixel kernels (delta smoothing and the
+final rounding/dither):
+
+| Value | x86-64 | arm64 |
+|---|---|---|
+| 0 | best available: AVX2, else SSE2 | NEON |
+| 1 | C | C |
+| 2 | SSE2 | error |
+| 3 | AVX2 | error |
+
+A value the CPU cannot run raises `AutoAdjust: Invalid SIMD`. All paths give **bit-identical
+output** (each vector lane runs the C operations in the same order, without fused multiply-add);
+the option only changes the speed. Single-threaded, 1080p YUV420P8, auto gain and auto balance:
+C 63 ms, SSE2 16 ms, AVX2 9 ms per frame (the original: 60 / 19 / 11 ms).
+
+**threads_count** (int, 0 … 16, default 0) — AviSynth+ only, accepted for scripts written for the
+original and ignored: the host does the threading.
 
 **debug_view** (bool, default false) — the original's analysis canvas; not implemented yet, `true`
 raises an error.
@@ -174,8 +188,9 @@ levels, a gamma, a saturation gain and the U/V shifts, applies them per pixel, s
 
 - With `use_dither=false` the output is **bit-exact** with the original's C path (`asm_opt=1`) for all
   tested parameter sets, 8-bit planar formats, `external_clip` and scene changes / `change_status`;
-  native 16 bit matches the original's stacked 16-bit mode bit-exactly. The original's default `asm_opt=0` uses AVX2 with an approximate `pow`, which differs
-  by ±1 in a few hundred pixels per 1080p frame; the port always computes the exact reference.
+  native 16 bit matches the original's stacked 16-bit mode bit-exactly. The original's SSE2/AVX2
+  paths differ from its C path (approximate `pow`, other summation orders: ±1 in a few hundred pixels
+  per 1080p frame); every `asm_opt` path of the port computes the exact C result.
 - Dither: the original seeds its dither offsets from the clock, so its output changes between runs. The
   port uses fixed offsets and its own 64×64 blue-noise table ([tools/gen_bluenoise.py](tools/gen_bluenoise.py))
   — output is reproducible.
@@ -183,7 +198,7 @@ levels, a gamma, a saturation gain and the U/V shifts, applies them per pixel, s
   (`high_bitdepth=true`) and silently mangled native clips. `high_bitdepth` no longer exists, so old
   scripts using it fail with an argument error. Float formats are rejected. Alpha planes are passed
   through.
-- `threads_count` and `asm_opt` are accepted in AviSynth+ for compatibility and ignored.
+- `threads_count` is accepted in AviSynth+ for compatibility and ignored; `asm_opt` exists in both hosts.
 - Black or full-scale frame averages give gamma 1 instead of NaN (black output).
 - Frame numbers outside the clip are clamped.
 - `debug_view` is not implemented yet.

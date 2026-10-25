@@ -6,6 +6,7 @@
 
 #include "avisynth.h"
 #include "core/autoadjust.hpp"
+#include "core/kernels.hpp"
 #include "core/stats_cache.hpp"
 #include "version.hpp"
 
@@ -17,7 +18,7 @@ const int kPlanes[3] = {PLANAR_Y, PLANAR_U, PLANAR_V};
 
 class AutoAdjustAvs : public GenericVideoFilter {
  public:
-  AutoAdjustAvs(PClip child, PClip external, const Params& p, std::vector<ChangeRange> overrides)
+  AutoAdjustAvs(PClip child, PClip external, const Params& p, std::vector<ChangeRange> overrides, int asm_opt)
       : GenericVideoFilter(child), external_(external) {
     const VideoInfo& evi = external_->GetVideoInfo();
     ext_frames_ = evi.num_frames;
@@ -25,7 +26,7 @@ class AutoAdjustAvs : public GenericVideoFilter {
     fmt_.has_chroma = !vi.IsY();
     fmt_.ssw = fmt_.has_chroma ? vi.GetPlaneWidthSubsampling(PLANAR_U) : 0;
     fmt_.ssh = fmt_.has_chroma ? vi.GetPlaneHeightSubsampling(PLANAR_U) : 0;
-    engine_ = std::make_unique<Engine>(p, fmt_, vi.width, vi.height, vi.num_frames, std::move(overrides));
+    engine_ = std::make_unique<Engine>(p, fmt_, vi.width, vi.height, vi.num_frames, std::move(overrides), asm_opt);
   }
 
   PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env) override {
@@ -135,7 +136,7 @@ AVSValue __cdecl Create(AVSValue args, void*, IScriptEnvironment* env) {
   p.use_dither = args[20].AsBool(true);
   p.high_quality = args[21].AsBool(false);
   const int threads_count = args[22].AsInt(0);  // accepted for compatibility, the host does the threading
-  const int asm_opt = args[23].AsInt(0);        // accepted for compatibility, there is one code path
+  const int asm_opt = args[23].AsInt(0);
   p.debug_view = args[24].AsBool(false);
 
   const std::string err = validateParams(p);
@@ -148,13 +149,14 @@ AVSValue __cdecl Create(AVSValue args, void*, IScriptEnvironment* env) {
   checkClip(vi, env);
   checkClip(evi, env);
   if (!vi.IsSameColorspace(evi)) env->ThrowError("AutoAdjust: Colorspace of clip and external_clip must be the same");
+  if (!simdAvailable(asm_opt)) env->ThrowError("AutoAdjust: Invalid SIMD");
 
   std::vector<ChangeRange> overrides;
   if (!parseChangeStatus(p.change_status, evi.num_frames, overrides))
     env->ThrowError("AutoAdjust: change_status invalid syntax!");
   if (p.debug_view) env->ThrowError("AutoAdjust: debug_view is not implemented yet");
 
-  return new AutoAdjustAvs(child, external, p, std::move(overrides));
+  return new AutoAdjustAvs(child, external, p, std::move(overrides), asm_opt);
 }
 
 }  // namespace

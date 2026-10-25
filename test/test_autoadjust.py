@@ -7,6 +7,7 @@ Usage: python test/test_autoadjust.py [path/to/AutoAdjust plugin]
 Without an argument the plugin is expected to be autoloaded (e.g. from the installed wheel).
 """
 import ctypes
+import functools
 import hashlib
 import sys
 
@@ -16,7 +17,8 @@ core = vs.core
 FAILURES = []
 W, H, LENGTH, CUT = 96, 64, 24, 12
 
-# SHA-256 of all planes of frames 0, CUT - 1, CUT and LENGTH - 1 for each case below.
+# SHA-256 of all planes of frames 0, CUT - 1, CUT and LENGTH - 1 for each case below; every asm_opt the CPU
+# supports (C, SSE2, AVX2 on x86, NEON on arm64) must give exactly this result.
 # The 8-bit cases without dither equal the original AutoAdjust 2.60 C path (asm_opt=1, use_dither=false).
 REFERENCE = {
     "gain": "fff6da7bf41bdfa5be3f956ae74f87fca3e0173ac32a84bffcdc4eef96c75efc",
@@ -109,8 +111,8 @@ def digest(clip, frames=(0, CUT - 1, CUT, LENGTH - 1)):
     return h.hexdigest()
 
 
-def cases(src):
-    aa = core.autoadjust.AutoAdjust
+def cases(src, opt):
+    aa = functools.partial(core.autoadjust.AutoAdjust, asm_opt=opt)
     gray = core.std.ShufflePlanes(src, 0, vs.GRAY)
     ext = core.std.Levels(src, min_in=30, max_in=220, planes=0)
     return {
@@ -165,18 +167,28 @@ def main():
     check(order_a == order_b, "request order does not change the result")
     check(digest(aa(src, auto_gain=1)) == digest(aa(src, auto_gain=1)), "dither is deterministic")
 
-    for name, make in cases(src).items():
-        d = digest(make())
-        expected = REFERENCE.get(name)
-        if expected is None:
-            print("info reference %s: %s" % (name, d))
-        else:
-            check(d == expected, "reference result: %s" % name)
+    opts = []
+    for opt in (0, 1, 2, 3):
+        try:
+            aa(src, asm_opt=opt)
+            opts.append(opt)
+        except vs.Error as e:
+            check("Invalid SIMD" in str(e), "asm_opt=%d not available on this CPU" % opt)
+    print("info asm_opt values available: %s" % opts)
+    for opt in opts:
+        for name, make in cases(src, opt).items():
+            d = digest(make())
+            expected = REFERENCE.get(name)
+            if expected is None:
+                print("info reference %s (asm_opt=%d): %s" % (name, opt, d))
+            else:
+                check(d == expected, "reference result: %s, asm_opt=%d" % (name, opt))
 
     expect_error(lambda: aa(src, dark_limit=0.5), "dark_limit range", "dark_limit must be between 1.0 and 100.0")
     expect_error(lambda: aa(src, gain_mode=2), "gain_mode range", "gain_mode must be 0 or 1")
     expect_error(lambda: aa(src, chroma_process=201), "chroma_process range", "chroma_process must be between 0 and 200")
     expect_error(lambda: aa(src, temporal_radius=-1), "temporal_radius range", "temporal_radius must be >= 0")
+    expect_error(lambda: aa(src, asm_opt=4), "asm_opt range", "asm_opt must be between 0 and 3")
     for cs in ("1-", "3-1", "!!1", "a", ";5", "!", "%d" % LENGTH):
         expect_error(lambda cs=cs: aa(src, change_status=cs), "change_status %r" % cs, "change_status invalid syntax!")
     expect_error(lambda: aa(core.resize.Point(src, format=vs.RGB24)), "RGB rejected", "only 8-16 bit integer YUV")

@@ -7,6 +7,7 @@
 #include "VSHelper4.h"
 #include "VapourSynth4.h"
 #include "core/autoadjust.hpp"
+#include "core/kernels.hpp"
 #include "core/stats_cache.hpp"
 #include "version.hpp"
 
@@ -163,14 +164,17 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
   p.use_dither = getBool("use_dither", true);
   p.high_quality = getBool("high_quality", false);
   p.debug_view = getBool("debug_view", false);
+  const int asm_opt = getInt("asm_opt", 0);
 
   std::string err = validateParams(p);
   if (!err.empty()) return fail(err);
+  if (static_cast<unsigned>(asm_opt) > 3) return fail("AutoAdjust: asm_opt must be between 0 and 3");
   const VSVideoInfo* vi = vsapi->getVideoInfo(d->node);
   const VSVideoInfo* evi = vsapi->getVideoInfo(d->external);
   if (!checkFormat(vi, err) || !checkFormat(evi, err)) return fail(err);
   if (!vsh::isSameVideoFormat(&vi->format, &evi->format))
     return fail("AutoAdjust: Colorspace of clip and external_clip must be the same");
+  if (!simdAvailable(asm_opt)) return fail("AutoAdjust: Invalid SIMD");
   std::vector<ChangeRange> overrides;
   if (!parseChangeStatus(p.change_status, evi->numFrames, overrides))
     return fail("AutoAdjust: change_status invalid syntax!");
@@ -181,7 +185,7 @@ void VS_CC create(const VSMap* in, VSMap* out, void*, VSCore* core, const VSAPI*
   d->fmt.has_chroma = vi->format.colorFamily == cfYUV;
   d->fmt.ssw = d->fmt.has_chroma ? vi->format.subSamplingW : 0;
   d->fmt.ssh = d->fmt.has_chroma ? vi->format.subSamplingH : 0;
-  d->engine = std::make_unique<Engine>(p, d->fmt, vi->width, vi->height, vi->numFrames, std::move(overrides));
+  d->engine = std::make_unique<Engine>(p, d->fmt, vi->width, vi->height, vi->numFrames, std::move(overrides), asm_opt);
 
   VSFilterDependency deps[] = {{d->node, rpStrictSpatial}, {d->external, rpGeneral}};
   vsapi->createVideoFilter(out, "AutoAdjust", vi, getFrame, freeFilter, fmParallel, deps, 2, d.release(), core);
@@ -200,6 +204,6 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
                            "input_tv:int:opt;output_tv:int:opt;auto_balance:int:opt;chroma_limit:float:opt;"
                            "balance_str:float:opt;scd_threshold:int:opt;temporal_radius:int:opt;"
                            "change_status:data:opt;use_interp:int:opt;use_dither:int:opt;high_quality:int:opt;"
-                           "debug_view:int:opt;",
+                           "asm_opt:int:opt;debug_view:int:opt;",
                            "clip:vnode;", create, nullptr, plugin);
 }
