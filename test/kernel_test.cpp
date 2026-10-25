@@ -66,6 +66,20 @@ static void check(const Kernels& k, std::mt19937& rng) {
       std::printf("%s store8 differs: w=%d\n", k.name, w);
       failures++;
     }
+    // sad: random rows, both sample sizes
+    {
+      std::vector<uint8_t> a8s(w), b8s(w);
+      for (auto& v : a8s) v = static_cast<uint8_t>(rng());
+      for (auto& v : b8s) v = static_cast<uint8_t>(rng());
+      std::vector<uint16_t> a16s(w), b16s(w);
+      for (auto& v : a16s) v = static_cast<uint16_t>(rng());
+      for (auto& v : b16s) v = static_cast<uint16_t>(rng());
+      if (kernelsC().sad8(a8s.data(), b8s.data(), w) != k.sad8(a8s.data(), b8s.data(), w) ||
+          kernelsC().sad16(a16s.data(), b16s.data(), w) != k.sad16(a16s.data(), b16s.data(), w)) {
+        std::printf("%s sad differs: w=%d\n", k.name, w);
+        failures++;
+      }
+    }
     for (float maxv : {1023.0f, 4095.0f, 65535.0f}) {
       std::vector<uint16_t> s16(w), a16(w), b16(w);
       std::vector<float> d16(w);

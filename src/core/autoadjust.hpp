@@ -4,9 +4,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "once_cache.hpp"
 
 namespace autoadjust {
 
@@ -73,6 +76,13 @@ struct Format {
   int ssh = 1;  // chroma subsampling shift, vertical
 };
 
+// One external_clip frame for the statistics; holder keeps the host's frame alive while the planes are read.
+struct SourceFrame {
+  ConstPlane y, u, v;
+  std::shared_ptr<const void> holder;
+};
+using FetchFrame = std::function<SourceFrame(int k)>;
+
 struct FrameStats {
   int status = 1;  // 1 = scene start, 2 = continuation
   float fmin = 0, fmax = 0, favg = 0, uavg = 0, vavg = 0;
@@ -93,9 +103,8 @@ class Engine {
   const Format& format() const { return fmt_; }
   bool isPassthrough() const { return !p_.auto_gain && !p_.auto_balance; }
 
-  // Statistics of external_clip frame k; prev_y is the luma of frame k-1 (only read when needsPrevious(k)).
-  FrameStats frameStats(int k, const ConstPlane& y, const ConstPlane* prev_y, const ConstPlane* u,
-                        const ConstPlane* v) const;
+  // Statistics of external_clip frames [first, last]; every frame is computed once, whichever thread asks first.
+  std::vector<FrameStats> windowStats(int first, int last, const FetchFrame& fetch) const;
   bool needsPrevious(int k) const;  // false when an override decides the status of k
 
   // Temporal combination of stats[k - first] for k in [first, first + stats.size()).
@@ -103,17 +112,17 @@ class Engine {
   // Frames of external_clip whose statistics combine() may need for output frame n.
   void window(int n, int& first, int& last) const;
 
-  // Applies the correction to the planes of dst (already holding a copy of the input frame).
-  void apply(const Correction& c, Plane* planes, int plane_count) const;
+  // Whether apply() writes plane i (0 = Y, 1 = U, 2 = V); the host copies or references the others.
+  bool processesPlane(const Correction& c, int plane) const;
+  // Writes the corrected planes processesPlane() selects from src to dst (src and dst may be the same).
+  void apply(const Correction& c, const ConstPlane* src, Plane* dst, int plane_count) const;
 
  private:
-  std::vector<float> lumaTable(const Correction& c, int size) const;
-  std::vector<float> chromaTable(const Correction& c, float bal, int size) const;
-  void deltaFromTable(const std::vector<float>& lut, const Plane& pl, std::vector<float>& d) const;
-  void processLuma(const Correction& c, Plane& pl) const;
-  void processChroma(const Correction& c, Plane& pl, float bal) const;
-  void smooth(std::vector<float>& d, int w, int h, int rx, int ry) const;
-  void store(const std::vector<float>& d, Plane& pl) const;
+  FrameStats computeStats(int k, const FetchFrame& fetch) const;
+  std::shared_ptr<const std::vector<float>> lumaHistogram(int k, const ConstPlane& y) const;
+  void lumaTable(const Correction& c, std::vector<float>& lut) const;
+  void chromaTable(const Correction& c, float bal, std::vector<float>& lut) const;
+  void processPlane(const std::vector<float>& lut, const ConstPlane& src, Plane& dst, int rx, int ry) const;
 
   Params p_;
   Format fmt_;
@@ -125,6 +134,8 @@ class Engine {
   float dither_[64][64];
   float rounding_[64];
   const Kernels* k_;
+  mutable OnceCache<FrameStats> stats_cache_{1024};
+  mutable OnceCache<std::shared_ptr<const std::vector<float>>> hist_cache_{64};
 };
 
 }  // namespace autoadjust

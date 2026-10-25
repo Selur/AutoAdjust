@@ -39,12 +39,41 @@ struct VAvx2 {
   }
 };
 
+uint64_t sad8Avx2(const uint8_t* a, const uint8_t* b, int w) {
+  __m256i acc = _mm256_setzero_si256();
+  int x = 0;
+  for (; x + 32 <= w; x += 32)
+    acc = _mm256_add_epi64(acc, _mm256_sad_epu8(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + x)),
+                                                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + x))));
+  alignas(32) uint64_t lane[4];
+  _mm256_store_si256(reinterpret_cast<__m256i*>(lane), acc);
+  return lane[0] + lane[1] + lane[2] + lane[3] + sadTail(a, b, x, w);
+}
+
+uint64_t sad16Avx2(const uint16_t* a, const uint16_t* b, int w) {
+  // 32-bit lanes hold one row: at most w / 8 * 65535 per lane.
+  const __m256i z = _mm256_setzero_si256();
+  __m256i acc = z;
+  int x = 0;
+  for (; x + 16 <= w; x += 16) {
+    const __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + x));
+    const __m256i vb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + x));
+    const __m256i d = _mm256_or_si256(_mm256_subs_epu16(va, vb), _mm256_subs_epu16(vb, va));
+    acc = _mm256_add_epi32(acc, _mm256_add_epi32(_mm256_unpacklo_epi16(d, z), _mm256_unpackhi_epi16(d, z)));
+  }
+  alignas(32) uint32_t lane[8];
+  _mm256_store_si256(reinterpret_cast<__m256i*>(lane), acc);
+  uint64_t s = 0;
+  for (uint32_t v : lane) s += v;
+  return s + sadTail(a, b, x, w);
+}
+
 }  // namespace
 
 namespace autoadjust {
 
 const Kernels& kernelsAVX2() {
-  static const Kernels k{"AVX2", vpassT<VAvx2>, hpassT<VAvx2>, store8T<VAvx2>, store16T<VAvx2>};
+  static const Kernels k{"AVX2", vpassT<VAvx2>, hpassT<VAvx2>, store8T<VAvx2>, store16T<VAvx2>, sad8Avx2, sad16Avx2};
   return k;
 }
 

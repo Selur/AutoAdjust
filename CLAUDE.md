@@ -13,8 +13,14 @@ Clean-room port of LaTo's closed-source AutoAdjust 2.60: one plugin binary for A
 - `src/core/`: host-independent engine (statistics, temporal window, transform, delta smoothing,
   dither). The C path of the original is reproduced bit-exactly; summation order and strict
   single precision matter (no FMA contraction: `/fp:precise`, `-ffp-contract=off`).
-- Pixel kernels (`src/core/kernels*.cpp`): vertical/horizontal delta smoothing and the final store per
-  instruction set; `kernels_simd.hpp` is one template over a vector traits type, instantiated in
+- Threads: the host runs `GetFrame` in parallel; `Engine::windowStats()` takes frames from the host
+  through a fetch callback and computes every frame's statistics once (`OnceCache`: the first thread
+  claims a frame, others compute their own claims first and then wait; luma histograms are cached the
+  same way for the scene change test). `processPlane()` streams rows through a ring of `2 * ry + 1`
+  delta rows (thread-local, no frame-sized buffers); `apply()` reads `src` and writes `dst`, so the
+  hosts reference or copy only the untouched planes.
+- Pixel kernels (`src/core/kernels*.cpp`): vertical/horizontal delta smoothing, the final store and the
+  row SAD of the scene change test per instruction set; `kernels_simd.hpp` is one template over a vector traits type, instantiated in
   `kernels_sse2.cpp`, `kernels_avx2.cpp` (only this file is built with AVX2, never with FMA) and
   `kernels_neon.cpp`; `kernels_dispatch.cpp` maps `asm_opt` (0 auto, 1 C, 2 SSE2, 3 AVX2; arm64: 0 NEON).
   Every path must stay bit-identical to `kernels_c.cpp`: same operation order per lane, separate

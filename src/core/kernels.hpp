@@ -21,6 +21,9 @@ using HPassFn = void (*)(const float* src, float* out, int p0, int p1, int rho, 
 // One output row: trunc(clamp((d + v) + add[x & 63], 0, maxv)).
 using Store8Fn = void (*)(const float* d, const uint8_t* src, uint8_t* dst, int w, const float* add);
 using Store16Fn = void (*)(const float* d, const uint16_t* src, uint16_t* dst, int w, const float* add, float maxv);
+// Sum of absolute differences of one row (scene change detection, SPEC §5.5).
+using Sad8Fn = uint64_t (*)(const uint8_t* a, const uint8_t* b, int w);
+using Sad16Fn = uint64_t (*)(const uint16_t* a, const uint16_t* b, int w);
 
 struct Kernels {
   const char* name;
@@ -28,6 +31,8 @@ struct Kernels {
   HPassFn hpass;
   Store8Fn store8;
   Store16Fn store16;
+  Sad8Fn sad8;
+  Sad16Fn sad16;
 };
 
 // asm_opt values: 0 = best available, 1 = C, 2 = SSE2, 3 = AVX2; on arm64 0 is NEON.

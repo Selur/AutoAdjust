@@ -41,12 +41,31 @@ struct VNeon {
   static void storeTruncU16(uint16_t* p, T v) { vst1_u16(p, vmovn_u32(vcvtq_u32_f32(v))); }
 };
 
+uint64_t sumLanes(uint32x4_t v) {
+  return static_cast<uint64_t>(vgetq_lane_u32(v, 0)) + vgetq_lane_u32(v, 1) + vgetq_lane_u32(v, 2) + vgetq_lane_u32(v, 3);
+}
+
+uint64_t sad8Neon(const uint8_t* a, const uint8_t* b, int w) {
+  uint32x4_t acc = vdupq_n_u32(0);
+  int x = 0;
+  for (; x + 16 <= w; x += 16) acc = vpadalq_u16(acc, vpaddlq_u8(vabdq_u8(vld1q_u8(a + x), vld1q_u8(b + x))));
+  return sumLanes(acc) + sadTail(a, b, x, w);
+}
+
+uint64_t sad16Neon(const uint16_t* a, const uint16_t* b, int w) {
+  // 32-bit lanes hold one row: at most w / 4 * 65535 per lane.
+  uint32x4_t acc = vdupq_n_u32(0);
+  int x = 0;
+  for (; x + 8 <= w; x += 8) acc = vpadalq_u16(acc, vabdq_u16(vld1q_u16(a + x), vld1q_u16(b + x)));
+  return sumLanes(acc) + sadTail(a, b, x, w);
+}
+
 }  // namespace
 
 namespace autoadjust {
 
 const Kernels& kernelsNEON() {
-  static const Kernels k{"NEON", vpassT<VNeon>, hpassT<VNeon>, store8T<VNeon>, store16T<VNeon>};
+  static const Kernels k{"NEON", vpassT<VNeon>, hpassT<VNeon>, store8T<VNeon>, store16T<VNeon>, sad8Neon, sad16Neon};
   return k;
 }
 

@@ -8,7 +8,6 @@
 #include "VapourSynth4.h"
 #include "core/autoadjust.hpp"
 #include "core/kernels.hpp"
-#include "core/stats_cache.hpp"
 #include "version.hpp"
 
 using namespace autoadjust;
@@ -21,7 +20,6 @@ struct FilterData {
   int ext_frames = 0;
   Format fmt;
   std::unique_ptr<Engine> engine;
-  StatsCache cache;
 };
 
 SampleKind kindOf(const Format& f) { return f.bits > 8 ? SampleKind::U16 : SampleKind::U8; }
@@ -33,28 +31,17 @@ ConstPlane readPlane(const VSFrame* f, int plane, const Format& fmt, const VSAPI
 
 int externalIndex(const FilterData* d, int k) { return k < d->ext_frames ? k : d->ext_frames - 1; }
 
-FrameStats statsOf(FilterData* d, int k, VSFrameContext* ctx, const VSAPI* vsapi) {
-  FrameStats s;
-  if (d->cache.get(k, s)) return s;
-  const VSFrame* cur = vsapi->getFrameFilter(externalIndex(d, k), d->external, ctx);
-  const VSFrame* prev = nullptr;
-  ConstPlane prev_y;
-  if (d->engine->needsPrevious(k)) {
-    prev = vsapi->getFrameFilter(externalIndex(d, k - 1), d->external, ctx);
-    prev_y = readPlane(prev, 0, d->fmt, vsapi);
-  }
-  const ConstPlane y = readPlane(cur, 0, d->fmt, vsapi);
-  ConstPlane u, v;
+SourceFrame sourceFrame(const FilterData* d, int k, VSFrameContext* ctx, const VSAPI* vsapi) {
+  std::shared_ptr<const VSFrame> frame(vsapi->getFrameFilter(externalIndex(d, k), d->external, ctx),
+                                       [vsapi](const VSFrame* f) { vsapi->freeFrame(f); });
+  SourceFrame f;
+  f.y = readPlane(frame.get(), 0, d->fmt, vsapi);
   if (d->fmt.has_chroma) {
-    u = readPlane(cur, 1, d->fmt, vsapi);
-    v = readPlane(cur, 2, d->fmt, vsapi);
+    f.u = readPlane(frame.get(), 1, d->fmt, vsapi);
+    f.v = readPlane(frame.get(), 2, d->fmt, vsapi);
   }
-  s = d->engine->frameStats(k, y, prev ? &prev_y : nullptr, d->fmt.has_chroma ? &u : nullptr,
-                            d->fmt.has_chroma ? &v : nullptr);
-  vsapi->freeFrame(prev);
-  vsapi->freeFrame(cur);
-  d->cache.put(k, s);
-  return s;
+  f.holder = frame;
+  return f;
 }
 
 const VSFrame* VS_CC getFrame(int n, int reason, void* instance, void**, VSFrameContext* ctx, VSCore* core,
@@ -76,19 +63,27 @@ const VSFrame* VS_CC getFrame(int n, int reason, void* instance, void**, VSFrame
   if (d->engine->isPassthrough()) return src;
   int first, last;
   d->engine->window(n, first, last);
-  std::vector<FrameStats> stats;
-  stats.reserve(last - first + 1);
-  for (int k = first; k <= last; k++) stats.push_back(statsOf(d, k, ctx, vsapi));
-  const Correction c = d->engine->combine(n, first, stats);
+  const FetchFrame fetch = [d, ctx, vsapi](int k) { return sourceFrame(d, k, ctx, vsapi); };
+  const Correction c = d->engine->combine(n, first, d->engine->windowStats(first, last, fetch));
 
-  VSFrame* dst = vsapi->copyFrame(src, core);
-  vsapi->freeFrame(src);
-  Plane planes[3];
+  // Planes the correction leaves alone are referenced from the source frame, the others are written anew.
   const int count = d->fmt.has_chroma ? 3 : 1;
+  const VSFrame* plane_src[3] = {nullptr, nullptr, nullptr};
+  const int plane_index[3] = {0, 1, 2};
   for (int i = 0; i < count; i++)
-    planes[i] = {vsapi->getWritePtr(dst, i), vsapi->getStride(dst, i), vsapi->getFrameWidth(dst, i),
-                 vsapi->getFrameHeight(dst, i), kindOf(d->fmt)};
-  d->engine->apply(c, planes, count);
+    if (!d->engine->processesPlane(c, i)) plane_src[i] = src;
+  const VSVideoFormat* format = vsapi->getVideoFrameFormat(src);
+  VSFrame* dst = vsapi->newVideoFrame2(format, vsapi->getFrameWidth(src, 0), vsapi->getFrameHeight(src, 0), plane_src,
+                                       plane_index, src, core);
+  ConstPlane in[3];
+  Plane out[3];
+  for (int i = 0; i < count; i++) {
+    in[i] = readPlane(src, i, d->fmt, vsapi);
+    out[i] = {vsapi->getWritePtr(dst, i), vsapi->getStride(dst, i), vsapi->getFrameWidth(dst, i),
+              vsapi->getFrameHeight(dst, i), kindOf(d->fmt)};
+  }
+  d->engine->apply(c, in, out, count);
+  vsapi->freeFrame(src);
   return dst;
 }
 

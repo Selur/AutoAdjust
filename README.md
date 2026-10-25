@@ -183,6 +183,19 @@ the option only changes the speed. Single-threaded, 1080p YUV420P8, auto gain an
 C 63 ms, SSE2 16 ms, AVX2 9 ms per frame (the original: 60 / 19 / 11 ms); on an Apple M4 Pro
 C 35 ms, NEON 13 ms.
 
+Multithreading is left to the host (VapourSynth's thread pool, AviSynth+ `Prefetch()`); the filter is
+thread-safe, computes the statistics of every frame once however many threads need them, and keeps
+no frame-sized buffers. 1080p YUV420P8 in VapourSynth on a 16-core / 32-thread CPU (fps, frames per
+second):
+
+| threads | 1 | 8 | 16 | 32 |
+|---|---|---|---|---|
+| 8 bit | 111 | 895 | 1567 | 1747 |
+| 16 bit | 88 | 755 | 1099 | 1189 |
+
+In AviSynth+ (`Prefetch(16)`) 721 fps; beyond 16 threads AviSynth+ itself stops scaling on that machine
+(also with a plain `Blur()` chain).
+
 **threads_count** (int, 0 … 16, default 0) — AviSynth+ only, accepted for scripts written for the
 original and ignored: the host does the threading.
 
@@ -232,6 +245,17 @@ Floating point must stay strict (`/fp:precise`; `-ffp-contract=off` with GCC/Cla
 `meson.build`), otherwise the output is no longer bit-exact with the reference.
 
 ## Changes
+
+**Unreleased**
+
+- Thread scaling: the statistics of a frame are computed once even when many threads need them at the
+  same time (they were computed again by every thread that found them missing), the luma histogram
+  of a frame is reused for the scene change test of the next one, and the pixel work streams through
+  a small ring of rows instead of frame-sized float buffers. VapourSynth, 1080p 8 bit, 32 threads:
+  329 → 1747 fps; one thread 63 → 111 fps. Same output.
+- Scene change detection: the pixel difference uses SIMD kernels (SSE2, AVX2, NEON).
+- VapourSynth references the planes it does not change instead of copying the frame; AviSynth+ keeps
+  frame properties (interface 8).
 
 **0.2.0**
 

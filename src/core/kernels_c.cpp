@@ -56,6 +56,16 @@ void storeC(const float* d, const T* src, T* dst, int w, const float* add, float
   }
 }
 
+template <typename T>
+uint64_t sadTail(const T* a, const T* b, int x, int w) {
+  uint64_t s = 0;
+  for (; x < w; x++) s += a[x] > b[x] ? a[x] - b[x] : b[x] - a[x];
+  return s;
+}
+
+uint64_t sad8C(const uint8_t* a, const uint8_t* b, int w) { return sadTail(a, b, 0, w); }
+uint64_t sad16C(const uint16_t* a, const uint16_t* b, int w) { return sadTail(a, b, 0, w); }
+
 void store8C(const float* d, const uint8_t* src, uint8_t* dst, int w, const float* add) { storeC(d, src, dst, w, add, 255.0f); }
 void store16C(const float* d, const uint16_t* src, uint16_t* dst, int w, const float* add, float maxv) {
   storeC(d, src, dst, w, add, maxv);
@@ -64,7 +74,7 @@ void store16C(const float* d, const uint16_t* src, uint16_t* dst, int w, const f
 }  // namespace
 
 const Kernels& kernelsC() {
-  static const Kernels k{"C", vpassC, hpassC, store8C, store16C};
+  static const Kernels k{"C", vpassC, hpassC, store8C, store16C, sad8C, sad16C};
   return k;
 }
 

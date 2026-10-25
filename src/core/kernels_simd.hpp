@@ -15,6 +15,13 @@ inline typename V::T clampV(typename V::T v, typename V::T lo, typename V::T hi)
 
 inline float clampS(float v, float lo, float hi) { return std::min(std::max(v, lo), hi); }
 
+template <typename T>
+uint64_t sadTail(const T* a, const T* b, int x, int w) {
+  uint64_t s = 0;
+  for (; x < w; x++) s += a[x] > b[x] ? a[x] - b[x] : b[x] - a[x];
+  return s;
+}
+
 template <class V>
 void vpassT(const float* const* taps, int n, const float* center, float* out, int w, float thr, float factor, bool divide) {
   using T = typename V::T;

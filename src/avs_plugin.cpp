@@ -7,7 +7,6 @@
 #include "avisynth.h"
 #include "core/autoadjust.hpp"
 #include "core/kernels.hpp"
-#include "core/stats_cache.hpp"
 #include "version.hpp"
 
 using namespace autoadjust;
@@ -18,8 +17,15 @@ const int kPlanes[3] = {PLANAR_Y, PLANAR_U, PLANAR_V};
 
 class AutoAdjustAvs : public GenericVideoFilter {
  public:
-  AutoAdjustAvs(PClip child, PClip external, const Params& p, std::vector<ChangeRange> overrides, int asm_opt)
+  AutoAdjustAvs(PClip child, PClip external, const Params& p, std::vector<ChangeRange> overrides, int asm_opt,
+                IScriptEnvironment* env)
       : GenericVideoFilter(child), external_(external) {
+    try {
+      env->CheckVersion(8);
+      has_v8_ = true;
+    } catch (const AvisynthError&) {
+      has_v8_ = false;
+    }
     const VideoInfo& evi = external_->GetVideoInfo();
     ext_frames_ = evi.num_frames;
     fmt_.bits = vi.BitsPerComponent();
@@ -34,18 +40,22 @@ class AutoAdjustAvs : public GenericVideoFilter {
     if (engine_->isPassthrough()) return child->GetFrame(n, env);
     int first, last;
     engine_->window(n, first, last);
-    std::vector<FrameStats> stats;
-    stats.reserve(last - first + 1);
-    for (int k = first; k <= last; k++) stats.push_back(statsOf(k, env));
-    const Correction c = engine_->combine(n, first, stats);
+    const FetchFrame fetch = [this, env](int k) { return sourceFrame(k, env); };
+    const Correction c = engine_->combine(n, first, engine_->windowStats(first, last, fetch));
 
-    PVideoFrame frame = child->GetFrame(n, env);
-    env->MakeWritable(&frame);
-    Plane planes[3];
+    PVideoFrame src = child->GetFrame(n, env);
+    PVideoFrame dst = has_v8_ ? env->NewVideoFrameP(vi, &src) : env->NewVideoFrame(vi);
     const int count = fmt_.has_chroma ? 3 : 1;
-    for (int i = 0; i < count; i++) planes[i] = writablePlane(frame, kPlanes[i]);
-    engine_->apply(c, planes, count);
-    return frame;
+    ConstPlane in[3];
+    Plane out[3];
+    for (int i = 0; i < count; i++) {
+      in[i] = readPlane(src, kPlanes[i]);
+      out[i] = writablePlane(dst, kPlanes[i]);
+      if (!engine_->processesPlane(c, i)) copyPlane(src, dst, kPlanes[i], env);
+    }
+    if (vi.IsYUVA()) copyPlane(src, dst, PLANAR_A, env);
+    engine_->apply(c, in, out, count);
+    return dst;
   }
 
   int __stdcall SetCacheHints(int cachehints, int frame_range) override {
@@ -68,43 +78,32 @@ class AutoAdjustAvs : public GenericVideoFilter {
 
   Plane writablePlane(PVideoFrame& f, int plane) const {
     const ConstPlane c = readPlane(f, plane);
-    return {f->GetWritePtr(plane), c.stride, c.width, c.height, c.kind};
+    return {f->GetWritePtr(plane), f->GetPitch(plane), c.width, c.height, c.kind};
   }
 
-  PVideoFrame externalFrame(int k, IScriptEnvironment* env) {
-    return external_->GetFrame(k < ext_frames_ ? k : ext_frames_ - 1, env);
+  static void copyPlane(const PVideoFrame& src, PVideoFrame& dst, int plane, IScriptEnvironment* env) {
+    env->BitBlt(dst->GetWritePtr(plane), dst->GetPitch(plane), src->GetReadPtr(plane), src->GetPitch(plane),
+                src->GetRowSize(plane), src->GetHeight(plane));
   }
 
-  FrameStats statsOf(int k, IScriptEnvironment* env) {
-    FrameStats s;
-    if (cache_.get(k, s)) return s;
-    PVideoFrame cur = externalFrame(k, env);
-    PVideoFrame prev;
-    ConstPlane prev_y;
-    const bool need_prev = engine_->needsPrevious(k);
-    if (need_prev) {
-      prev = externalFrame(k - 1, env);
-      prev_y = readPlane(prev, PLANAR_Y);
-    }
-    const ConstPlane y = readPlane(cur, PLANAR_Y);
-    ConstPlane u, v;
+  SourceFrame sourceFrame(int k, IScriptEnvironment* env) const {
+    auto frame = std::make_shared<PVideoFrame>(external_->GetFrame(k < ext_frames_ ? k : ext_frames_ - 1, env));
+    SourceFrame f;
+    f.y = readPlane(*frame, PLANAR_Y);
     if (fmt_.has_chroma) {
-      u = readPlane(cur, PLANAR_U);
-      v = readPlane(cur, PLANAR_V);
+      f.u = readPlane(*frame, PLANAR_U);
+      f.v = readPlane(*frame, PLANAR_V);
     }
-    s = engine_->frameStats(k, y, need_prev ? &prev_y : nullptr, fmt_.has_chroma ? &u : nullptr,
-                            fmt_.has_chroma ? &v : nullptr);
-    cache_.put(k, s);
-    return s;
+    f.holder = frame;
+    return f;
   }
 
   PClip external_;
   int ext_frames_ = 0;
+  bool has_v8_ = false;
   Format fmt_;
   std::unique_ptr<Engine> engine_;
-  StatsCache cache_;
 };
-
 void checkClip(const VideoInfo& vi, IScriptEnvironment* env) {
   if ((vi.width & 1) || (vi.height & 1)) env->ThrowError("AutoAdjust: Width and height must be MOD2");
   if (!vi.IsPlanar() || !vi.IsYUV()) env->ThrowError("AutoAdjust: Colorspace must be YUV Planar");
@@ -156,7 +155,7 @@ AVSValue __cdecl Create(AVSValue args, void*, IScriptEnvironment* env) {
     env->ThrowError("AutoAdjust: change_status invalid syntax!");
   if (p.debug_view) env->ThrowError("AutoAdjust: debug_view is not implemented yet");
 
-  return new AutoAdjustAvs(child, external, p, std::move(overrides), asm_opt);
+  return new AutoAdjustAvs(child, external, p, std::move(overrides), asm_opt, env);
 }
 
 }  // namespace
