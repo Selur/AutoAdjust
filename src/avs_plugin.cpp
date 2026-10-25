@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// AviSynth+ interface of AutoAdjust (same function name and arguments as the original 2.60 plugin).
+// AviSynth+ interface of AutoAdjust (name and arguments of the original 2.60 plugin, without high_bitdepth).
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,18 +17,15 @@ const int kPlanes[3] = {PLANAR_Y, PLANAR_U, PLANAR_V};
 
 class AutoAdjustAvs : public GenericVideoFilter {
  public:
-  AutoAdjustAvs(PClip child, PClip external, const Params& p, bool stacked, std::vector<ChangeRange> overrides,
-                IScriptEnvironment* env)
-      : GenericVideoFilter(child), external_(external), stacked_(stacked) {
+  AutoAdjustAvs(PClip child, PClip external, const Params& p, std::vector<ChangeRange> overrides)
+      : GenericVideoFilter(child), external_(external) {
     const VideoInfo& evi = external_->GetVideoInfo();
     ext_frames_ = evi.num_frames;
-    fmt_.bits = stacked ? 16 : vi.BitsPerComponent();
+    fmt_.bits = vi.BitsPerComponent();
     fmt_.has_chroma = !vi.IsY();
     fmt_.ssw = fmt_.has_chroma ? vi.GetPlaneWidthSubsampling(PLANAR_U) : 0;
     fmt_.ssh = fmt_.has_chroma ? vi.GetPlaneHeightSubsampling(PLANAR_U) : 0;
-    const int h = stacked ? vi.height / 2 : vi.height;
-    engine_ = std::make_unique<Engine>(p, fmt_, vi.width, h, vi.num_frames, std::move(overrides));
-    (void)env;
+    engine_ = std::make_unique<Engine>(p, fmt_, vi.width, vi.height, vi.num_frames, std::move(overrides));
   }
 
   PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env) override {
@@ -56,9 +53,7 @@ class AutoAdjustAvs : public GenericVideoFilter {
   }
 
  private:
-  SampleKind kind() const {
-    return stacked_ ? SampleKind::Stacked16 : (fmt_.bits > 8 ? SampleKind::U16 : SampleKind::U8);
-  }
+  SampleKind kind() const { return fmt_.bits > 8 ? SampleKind::U16 : SampleKind::U8; }
 
   ConstPlane readPlane(const PVideoFrame& f, int plane) const {
     ConstPlane p;
@@ -66,7 +61,7 @@ class AutoAdjustAvs : public GenericVideoFilter {
     p.stride = f->GetPitch(plane);
     p.kind = kind();
     p.width = f->GetRowSize(plane) / (p.kind == SampleKind::U16 ? 2 : 1);
-    p.height = stacked_ ? f->GetHeight(plane) / 2 : f->GetHeight(plane);
+    p.height = f->GetHeight(plane);
     return p;
   }
 
@@ -103,20 +98,16 @@ class AutoAdjustAvs : public GenericVideoFilter {
   }
 
   PClip external_;
-  bool stacked_;
   int ext_frames_ = 0;
   Format fmt_;
   std::unique_ptr<Engine> engine_;
   StatsCache cache_;
 };
 
-void checkClip(const VideoInfo& vi, bool stacked, IScriptEnvironment* env) {
-  const int h = stacked ? vi.height / 2 : vi.height;
-  if ((vi.width & 1) || (h & 1)) env->ThrowError("AutoAdjust: Width and height must be MOD2");
+void checkClip(const VideoInfo& vi, IScriptEnvironment* env) {
+  if ((vi.width & 1) || (vi.height & 1)) env->ThrowError("AutoAdjust: Width and height must be MOD2");
   if (!vi.IsPlanar() || !vi.IsYUV()) env->ThrowError("AutoAdjust: Colorspace must be YUV Planar");
   if (vi.BitsPerComponent() > 16) env->ThrowError("AutoAdjust: float formats are not supported");
-  if (stacked && vi.BitsPerComponent() != 8)
-    env->ThrowError("AutoAdjust: high_bitdepth needs a stacked 8-bit clip; use native high bit depth instead");
 }
 
 AVSValue __cdecl Create(AVSValue args, void*, IScriptEnvironment* env) {
@@ -143,10 +134,9 @@ AVSValue __cdecl Create(AVSValue args, void*, IScriptEnvironment* env) {
   p.use_interp = args[19].AsBool(true);
   p.use_dither = args[20].AsBool(true);
   p.high_quality = args[21].AsBool(false);
-  const bool stacked = args[22].AsBool(false);
-  const int threads_count = args[23].AsInt(0);  // accepted for compatibility, the host does the threading
-  const int asm_opt = args[24].AsInt(0);        // accepted for compatibility, there is one code path
-  p.debug_view = args[25].AsBool(false);
+  const int threads_count = args[22].AsInt(0);  // accepted for compatibility, the host does the threading
+  const int asm_opt = args[23].AsInt(0);        // accepted for compatibility, there is one code path
+  p.debug_view = args[24].AsBool(false);
 
   const std::string err = validateParams(p);
   if (!err.empty()) env->ThrowError("%s", err.c_str());
@@ -155,8 +145,8 @@ AVSValue __cdecl Create(AVSValue args, void*, IScriptEnvironment* env) {
 
   const VideoInfo& vi = child->GetVideoInfo();
   const VideoInfo& evi = external->GetVideoInfo();
-  checkClip(vi, stacked, env);
-  checkClip(evi, stacked, env);
+  checkClip(vi, env);
+  checkClip(evi, env);
   if (!vi.IsSameColorspace(evi)) env->ThrowError("AutoAdjust: Colorspace of clip and external_clip must be the same");
 
   std::vector<ChangeRange> overrides;
@@ -164,7 +154,7 @@ AVSValue __cdecl Create(AVSValue args, void*, IScriptEnvironment* env) {
     env->ThrowError("AutoAdjust: change_status invalid syntax!");
   if (p.debug_view) env->ThrowError("AutoAdjust: debug_view is not implemented yet");
 
-  return new AutoAdjustAvs(child, external, p, stacked, std::move(overrides), env);
+  return new AutoAdjustAvs(child, external, p, std::move(overrides));
 }
 
 }  // namespace
@@ -178,7 +168,7 @@ extern "C" __declspec(dllexport) const char* __stdcall AvisynthPluginInit3(IScri
                    "c[external_clip]c[auto_gain]b[dark_limit]f[bright_limit]f[gamma_limit]f[dark_exclude]f"
                    "[bright_exclude]f[gain_mode]i[chroma_process]i[avg_safety]f[input_tv]b[output_tv]b"
                    "[auto_balance]b[chroma_limit]f[balance_str]f[scd_threshold]i[temporal_radius]i"
-                   "[change_status]s[use_interp]b[use_dither]b[high_quality]b[high_bitdepth]b"
+                   "[change_status]s[use_interp]b[use_dither]b[high_quality]b"
                    "[threads_count]i[asm_opt]i[debug_view]b",
                    Create, nullptr);
   return "AutoAdjust " AUTOADJUST_VERSION;

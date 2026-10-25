@@ -29,11 +29,6 @@ void readRow(const ConstPlane& p, int y, uint16_t* out) {
     case SampleKind::U16:
       std::memcpy(out, row, sizeof(uint16_t) * p.width);
       break;
-    case SampleKind::Stacked16: {
-      const uint8_t* lsb = p.data + p.stride * (y + p.height);
-      for (int x = 0; x < p.width; x++) out[x] = static_cast<uint16_t>(row[x] << 8 | lsb[x]);
-      break;
-    }
   }
 }
 
@@ -660,10 +655,6 @@ void Engine::store(const std::vector<float>& d, Plane& pl) const {
           break;
         case SampleKind::U16:
           reinterpret_cast<uint16_t*>(dst)[x] = static_cast<uint16_t>(o);
-          break;
-        case SampleKind::Stacked16:
-          dst[x] = static_cast<uint8_t>(o >> 8);
-          dst[x + pl.stride * h] = static_cast<uint8_t>(o & 0xFF);
           break;
       }
     }

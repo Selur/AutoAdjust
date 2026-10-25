@@ -46,13 +46,13 @@ struct ChangeRange {
 bool parseChangeStatus(const std::string& text, int frame_count, std::vector<ChangeRange>& out);
 
 // Sample storage of a plane as the host delivers it.
-enum class SampleKind { U8, U16, Stacked16 };
+enum class SampleKind { U8, U16 };
 
 struct ConstPlane {
   const uint8_t* data = nullptr;
   ptrdiff_t stride = 0;  // bytes
   int width = 0;
-  int height = 0;  // logical height (half the stored height for Stacked16)
+  int height = 0;
   SampleKind kind = SampleKind::U8;
 };
 
@@ -65,7 +65,7 @@ struct Plane {
 };
 
 struct Format {
-  int bits = 8;  // 8..16
+  int bits = 8;  // 8..16, native samples
   bool has_chroma = true;
   int ssw = 1;  // chroma subsampling shift, horizontal
   int ssh = 1;  // chroma subsampling shift, vertical

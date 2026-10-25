@@ -26,21 +26,24 @@ VapourSynth:
 clip = core.autoadjust.AutoAdjust(clip, auto_gain=True, auto_balance=True)
 ```
 
-Parameters and defaults are those of the original, see [docs/SPEC.md §2.2](docs/SPEC.md). In
-VapourSynth `high_bitdepth`, `threads_count` and `asm_opt` do not exist: native 8–16 bit formats are
-used directly and the host does the threading.
+Parameters and defaults are those of the original, see [docs/SPEC.md §2.2](docs/SPEC.md), except
+`high_bitdepth`: there is no stacked 16-bit mode, high bit depth clips are passed natively
+(`ConvertBits(16)` in AviSynth+, a 16-bit format in VapourSynth). In VapourSynth `threads_count` and
+`asm_opt` do not exist either; the host does the threading.
 
 ## Differences from the original
 
 - With `use_dither=false` the output is **bit-exact** with the original's C path (`asm_opt=1`) for all
-  tested parameter sets, 8-bit planar formats, `external_clip`, scene changes / `change_status` and
-  stacked 16 bit. The original's default `asm_opt=0` uses AVX2 with an approximate `pow`, which differs
+  tested parameter sets, 8-bit planar formats, `external_clip` and scene changes / `change_status`;
+  native 16 bit matches the original's stacked 16-bit mode bit-exactly. The original's default `asm_opt=0` uses AVX2 with an approximate `pow`, which differs
   by ±1 in a few hundred pixels per 1080p frame; the port always computes the exact reference.
 - Dither: the original seeds its dither offsets from the clock, so its output changes between runs. The
   port uses fixed offsets and its own 64×64 blue-noise table ([tools/gen_bluenoise.py](tools/gen_bluenoise.py))
   — output is reproducible.
-- Native high bit depth (10–16 bit) is supported in both hosts; the original silently mangled such
-  clips. Float formats are rejected. Alpha planes are passed through.
+- High bit depth is native only (10–16 bit, both hosts); the original needed stacked 16 bit
+  (`high_bitdepth=true`) and silently mangled native clips. `high_bitdepth` no longer exists, so old
+  scripts using it fail with an argument error. Float formats are rejected. Alpha planes are passed
+  through.
 - `threads_count` and `asm_opt` are accepted in AviSynth+ for compatibility and ignored.
 - Black or full-scale frame averages give gamma 1 instead of NaN (black output).
 - Frame numbers outside the clip are clamped.
