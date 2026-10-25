@@ -12,6 +12,20 @@ The original binary was analysed separately and its behaviour described in
 written from that specification only. The original DLL and any analysis output are not part of this
 repository.
 
+## Installation
+
+Every [release](https://github.com/Selur/AutoAdjust/releases) has, for Windows x64, Linux x86_64 and
+macOS arm64:
+
+- `vapoursynth_autoadjust-<version>-py3-none-<platform>.whl` — for VapourSynth:
+  `pip install <wheel>` puts the plugin into `site-packages/vapoursynth/plugins`, where VapourSynth
+  loads it automatically.
+- `AutoAdjust-<version>-<platform>.zip` — the bare plugin (`AutoAdjust.dll`, `libAutoAdjust.so`,
+  `libAutoAdjust.dylib`) with README and licence. For AviSynth+ copy it into the plugin folder or use
+  `LoadPlugin()`; VapourSynth can load the same file with `core.std.LoadPlugin()`.
+
+One file serves both hosts: 64-bit AviSynth+ or VapourSynth R55 or newer (API 4).
+
 ## Usage
 
 AviSynth+ (same name and arguments as the original, without `high_bitdepth`):
@@ -166,7 +180,8 @@ final rounding/dither):
 A value the CPU cannot run raises `AutoAdjust: Invalid SIMD`. All paths give **bit-identical
 output** (each vector lane runs the C operations in the same order, without fused multiply-add);
 the option only changes the speed. Single-threaded, 1080p YUV420P8, auto gain and auto balance:
-C 63 ms, SSE2 16 ms, AVX2 9 ms per frame (the original: 60 / 19 / 11 ms).
+C 63 ms, SSE2 16 ms, AVX2 9 ms per frame (the original: 60 / 19 / 11 ms); on an Apple M4 Pro
+C 35 ms, NEON 13 ms.
 
 **threads_count** (int, 0 … 16, default 0) — AviSynth+ only, accepted for scripts written for the
 original and ignored: the host does the threading.
@@ -215,6 +230,22 @@ levels, a gamma, a saturation gain and the U/V shifts, applies them per pixel, s
 
 Floating point must stay strict (`/fp:precise`; `-ffp-contract=off` with GCC/Clang, set by
 `meson.build`), otherwise the output is no longer bit-exact with the reference.
+
+## Changes
+
+**0.2.0**
+
+- `asm_opt` selects the pixel kernels again: C, SSE2, AVX2 (x86-64) and NEON (arm64), all
+  bit-identical to C. Single-threaded 1080p, auto gain and auto balance: 91 ms per frame in 0.1.0,
+  9 ms with AVX2 in 0.2.0.
+- VapourSynth: new parameter `asm_opt`.
+- The luma/chroma correction is computed once per sample value and frame (lookup table) instead of
+  per pixel; same results.
+
+**0.1.0**
+
+- First release: clean-room port of AutoAdjust 2.60 for AviSynth+ and VapourSynth, bit-exact with
+  the original's C path (`use_dither=false`), native 8–16 bit, reproducible dither.
 
 ## License
 
