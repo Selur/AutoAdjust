@@ -185,13 +185,24 @@ C 35 ms, NEON 13 ms.
 
 Multithreading is left to the host (VapourSynth's thread pool, AviSynth+ `Prefetch()`); the filter is
 thread-safe, computes the statistics of every frame once however many threads need them, and keeps
-no frame-sized buffers. 1080p YUV420P8 in VapourSynth on a 16-core / 32-thread CPU (fps, frames per
-second):
+no frame-sized buffers. Frames per second in VapourSynth, 1080p, auto gain and auto balance,
+`asm_opt=0`:
+
+Ryzen 9 7950X (16 cores / 32 threads, AVX2):
 
 | threads | 1 | 8 | 16 | 32 |
 |---|---|---|---|---|
-| 8 bit | 111 | 895 | 1567 | 1747 |
-| 16 bit | 88 | 755 | 1099 | 1189 |
+| YUV420P8 | 111 | 895 | 1567 | 1747 |
+| YUV420P16 | 88 | 755 | 1099 | 1189 |
+
+Apple M4 Pro (14 cores, NEON; including decoding with BestSource):
+
+| threads | 1 | 4 | 8 | 14 |
+|---|---|---|---|---|
+| YUV420P8 | 100 | 374 | 670 | 860 |
+| YUV420P16 | 72 | 257 | 491 | 564 |
+
+0.2.0 stopped scaling at about 8 threads (7950X: 390 fps 8 bit; M4 Pro: 265 fps).
 
 In AviSynth+ (`Prefetch(16)`) 721 fps; beyond 16 threads AviSynth+ itself stops scaling on that machine
 (also with a plain `Blur()` chain).
@@ -246,7 +257,7 @@ Floating point must stay strict (`/fp:precise`; `-ffp-contract=off` with GCC/Cla
 
 ## Changes
 
-**Unreleased**
+**0.2.1**
 
 - Thread scaling: the statistics of a frame are computed once even when many threads need them at the
   same time (they were computed again by every thread that found them missing), the luma histogram
