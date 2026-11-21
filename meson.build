@@ -1,7 +1,7 @@
 project('AutoAdjust', 'cpp',
   default_options : ['buildtype=release', 'b_ndebug=if-release', 'cpp_std=c++17'],
   meson_version : '>=0.64.0',
-  version : '0.2.1'
+  version : '0.2.2'
 )
 
 kernel_sources = [
